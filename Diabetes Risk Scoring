@@ -2,7 +2,8 @@
 Diabetes Risk Scoring System - Graphical User Interface (GUI) Build
 -------------------------------------------------------------------
 A clean 4-Tier Architecture implementation (Model, Service, GUI View, Controller)
-replacing console interaction with a modern Tkinter Desktop Application.
+featuring desktop GUI components, read-only report receipts, input sanitization,
+and automated test suite support.
 """
 
 import json
@@ -16,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 # =====================================================================
 # CONFIGURATION SWITCHES
 # Set RUN_TEST_SUITE = True to execute automated 3-tier test suite.
-# Set RUN_TEST_SUITE = False to launch the GUI desktop application.
+# Set RUN_TEST_SUITE = False to launch the desktop GUI application.
 # =====================================================================
 RUN_TEST_SUITE = False
 
@@ -178,12 +179,15 @@ class GUIView:
 
   def __init__(self, root: Any):
     self.root = root
-    self.root.title("Diabetes Risk Scoring System - Clinical GUI")
-    self.root.geometry("820x620")
+    self.root.title("Diabetes Risk Scoring System - Clinical Console")
+    self.root.geometry("840x640")
     self.root.resizable(True, True)
     self.root.configure(bg="#F4F6F9")
 
-    # Try setting modern ttk style
+    # Center window on screen
+    self._center_window()
+
+    # Set modern theme style if available
     try:
       import tkinter.ttk as ttk
 
@@ -194,11 +198,23 @@ class GUIView:
 
     self._build_ui()
 
+  def _center_window(self) -> None:
+    """Centers the GUI window on the screen."""
+    try:
+      self.root.update_idletasks()
+      width = 840
+      height = 640
+      x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+      y = (self.root.winfo_screenheight() // 2) - (height // 2)
+      self.root.geometry(f"{width}x{height}+{x}+{y}")
+    except Exception:
+      pass
+
   def _build_ui(self) -> None:
     import tkinter as tk
     from tkinter import ttk
 
-    # Header Banner
+    # Header Banner Frame
     header_frame = tk.Frame(self.root, bg="#1E3A8A", height=70)
     header_frame.pack(fill="x", side="top")
 
@@ -220,7 +236,7 @@ class GUIView:
     )
     subtitle_label.pack(anchor="w", padx=20, pady=(0, 10))
 
-    # Main Layout Frame (Left: Control Panel, Right: Receipt Report Panel)
+    # Main Layout Frame
     main_container = tk.Frame(self.root, bg="#F4F6F9")
     main_container.pack(fill="both", expand=True, padx=20, pady=15)
 
@@ -245,11 +261,12 @@ class GUIView:
         font=("Helvetica", 10, "bold"),
         bg="#FFFFFF",
         fg="#374151",
-    ).grid(row=0, column=0, sticky="w", pady=5)
+    ).grid(row=0, column=0, sticky="w", pady=6)
+
     self.patient_combo = ttk.Combobox(
         left_frame, state="readonly", font=("Helvetica", 10), width=18
     )
-    self.patient_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+    self.patient_combo.grid(row=0, column=1, sticky="w", pady=6, padx=5)
 
     # Metric Entry Inputs
     self.metric_entries: Dict[str, ttk.Entry] = {}
@@ -279,7 +296,7 @@ class GUIView:
       entry.grid(row=idx, column=1, sticky="w", pady=8, padx=5)
       self.metric_entries[m_name] = entry
 
-    # Action Buttons
+    # Action Buttons Frame
     btn_frame = tk.Frame(left_frame, bg="#FFFFFF")
     btn_frame.grid(row=5, column=0, columnspan=2, pady=(20, 5), sticky="ew")
 
@@ -327,7 +344,7 @@ class GUIView:
     )
     right_frame.pack(side="right", fill="both", expand=True, padx=(10, 0))
 
-    # Receipt Text Output Box
+    # Read-Only Receipt Text Output Box
     self.report_text = tk.Text(
         right_frame,
         wrap="word",
@@ -336,7 +353,7 @@ class GUIView:
         fg="#111827",
         bd=1,
         relief="solid",
-        width=36,
+        width=38,
         height=20,
     )
     self.report_text.pack(fill="both", expand=True)
@@ -361,11 +378,17 @@ class GUIView:
       entry.insert(0, formatted_val)
 
   def get_metrics_from_entries(self) -> Dict[str, float]:
-    """Reads and validates numerical inputs from entry fields."""
+    """Reads and validates numerical inputs from entry fields with user-friendly error messages."""
     updated = {}
     for m_name, entry in self.metric_entries.items():
       raw = entry.get().strip()
-      val = float(raw)
+      try:
+        val = float(raw)
+      except ValueError:
+        raise ValueError(
+            f"Invalid input for {m_name}: '{raw}'. Please enter a valid number."
+        )
+
       if math.isnan(val) or math.isinf(val) or val < 0:
         raise ValueError(
             f"Value for {m_name} must be a non-negative finite number."
@@ -374,7 +397,8 @@ class GUIView:
     return updated
 
   def clear_report(self) -> None:
-    """Displays initial placeholder in report view."""
+    """Displays initial placeholder in read-only report view."""
+    self.report_text.config(state="normal")
     self.report_text.delete("1.0", "end")
     placeholder = (
         "========================================\n"
@@ -388,11 +412,13 @@ class GUIView:
         "========================================\n"
     )
     self.report_text.insert("1.0", placeholder)
+    self.report_text.config(state="disabled")
 
   def display_diagnostic_report(
       self, patient_id: int, score: int, category: str
   ) -> None:
-    """Renders diagnostic report formatted as an official medical receipt with borders and confidential alert."""
+    """Renders diagnostic report formatted as an official read-only medical receipt with borders and confidential alert."""
+    self.report_text.config(state="normal")
     self.report_text.delete("1.0", "end")
 
     border_equal = "=" * 38
@@ -416,6 +442,7 @@ class GUIView:
         f"{border_star}\n"
     )
     self.report_text.insert("1.0", receipt)
+    self.report_text.config(state="disabled")
 
 
 # =====================================================================
@@ -691,13 +718,21 @@ if __name__ == "__main__":
     suite.run_all_tiers()
   else:
     # Launch Tkinter Desktop GUI Application
-    import tkinter as tk
+    try:
+      import tkinter as tk
 
-    root = tk.Tk()
+      root = tk.Tk()
 
-    db_model = PatientModel(storage_path="patients.json")
-    rules_service = ClinicalRiskService()
-    gui_view = GUIView(root)
+      db_model = PatientModel(storage_path="patients.json")
+      rules_service = ClinicalRiskService()
+      gui_view = GUIView(root)
 
-    app = GUIController(model=db_model, service=rules_service, view=gui_view)
-    root.mainloop()
+      app = GUIController(model=db_model, service=rules_service, view=gui_view)
+      root.mainloop()
+    except ModuleNotFoundError:
+      print("\n[GUI Notice] 'tkinter' is not installed in this environment.")
+      print(
+          "To launch the desktop GUI console, please run this script on a"
+          " desktop Python environment (Windows / macOS / Linux with Tkinter"
+          " installed).\n"
+      )
