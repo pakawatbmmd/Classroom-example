@@ -1,0 +1,562 @@
+"""
+Diabetes Risk Scoring System - Complete Final Production Build
+--------------------------------------------------------------
+A clean 4-Tier Architecture implementation (Model, Service, View, Controller)
+featuring medical receipt styling, Colab execution compatibility, input validation,
+optional JSON persistence, and a 3-tier automated test suite.
+"""
+
+import json
+import math
+import os
+import statistics
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+
+
+# =====================================================================
+# CONFIGURATION SWITCHES
+# Set RUN_TEST_SUITE = True to execute automated 3-tier test suite.
+# Set RUN_TEST_SUITE = False to launch the application runtime.
+# =====================================================================
+RUN_TEST_SUITE = True
+
+
+# =====================================================================
+# 1. DATA ACCESS LAYER (MODELS & PERSISTENCE)
+# =====================================================================
+class PatientModel:
+  """Manages patient data storage, persistence, and initial data cleaning."""
+
+  def __init__(self, storage_path: Optional[str] = None):
+    self.storage_path = storage_path
+    self._raw_patients: Dict[int, Dict[str, float]] = {
+        101: {
+            "Glucose": 95.0,
+            "BMI": 22.5,
+            "Age": 28.0,
+            "BloodPressure": 115.0,
+        },
+        102: {
+            "Glucose": 145.0,
+            "BMI": 0.0,
+            "Age": 54.0,
+            "BloodPressure": 135.0,
+        },
+        103: {
+            "Glucose": 112.0,
+            "BMI": 29.1,
+            "Age": 42.0,
+            "BloodPressure": 122.0,
+        },
+        104: {
+            "Glucose": 180.0,
+            "BMI": 36.4,
+            "Age": 61.0,
+            "BloodPressure": 142.0,
+        },
+    }
+
+    if self.storage_path and os.path.exists(self.storage_path):
+      self._load_from_disk()
+    else:
+      self._clean_initial_data()
+      if self.storage_path:
+        self._save_to_disk()
+
+  def _clean_initial_data(self) -> None:
+    """Imputes missing/invalid BMIs (<= 0) using the median of valid BMIs."""
+    valid_bmis = [p["BMI"] for p in self._raw_patients.values() if p["BMI"] > 0]
+    median_bmi = statistics.median(valid_bmis) if valid_bmis else 25.0
+    for metrics in self._raw_patients.values():
+      if metrics["BMI"] <= 0:
+        metrics["BMI"] = round(median_bmi, 1)
+
+  def _load_from_disk(self) -> None:
+    """Loads serialized patient dataset from JSON disk storage."""
+    try:
+      with open(self.storage_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        self._raw_patients = {int(k): v for k, v in data.items()}
+    except (json.JSONDecodeError, OSError) as e:
+      print(
+          f"[Warning] Failed to load patient storage ({e}). Re-initializing"
+          " baseline."
+      )
+      self._clean_initial_data()
+
+  def _save_to_disk(self) -> None:
+    """Persists patient dataset to JSON disk storage."""
+    if not self.storage_path:
+      return
+    try:
+      with open(self.storage_path, "w", encoding="utf-8") as f:
+        json.dump(self._raw_patients, f, indent=2)
+    except OSError as e:
+      print(f"[Warning] Failed to persist patient data to disk: {e}")
+
+  def get_all_ids(self) -> List[int]:
+    """Retrieves sorted list of active patient IDs."""
+    return sorted(self._raw_patients.keys())
+
+  def get_patient(self, patient_id: int) -> Optional[Dict[str, float]]:
+    """Retrieves a copy of the patient metrics dictionary."""
+    patient = self._raw_patients.get(patient_id)
+    return patient.copy() if patient else None
+
+  def update_patient(
+      self, patient_id: int, updated_metrics: Dict[str, float]
+  ) -> bool:
+    """Updates metrics for an existing patient record."""
+    if patient_id in self._raw_patients:
+      self._raw_patients[patient_id].update(updated_metrics)
+      if self.storage_path:
+        self._save_to_disk()
+      return True
+    return False
+
+
+# =====================================================================
+# 2. BUSINESS LOGIC LAYER (SERVICE)
+# =====================================================================
+class ClinicalRiskService:
+  """Handles clinical decision rules, point scoring, and risk categorization."""
+
+  # Continuous boundary thresholds: (low_max, med_max)
+  # Low Range   : value < low_max (0 pts)
+  # Medium Range: low_max <= value < med_max (1 pt)
+  # High Range  : value >= med_max (2 pts)
+  THRESHOLDS = {
+      "Glucose": (100.0, 126.0),
+      "BMI": (25.0, 30.0),
+      "Age": (35.0, 55.0),
+      "BloodPressure": (120.0, 130.0),
+  }
+
+  def calculate_metric_score(self, metric_name: str, value: float) -> int:
+    """Calculates 3-tier point score (0, 1, or 2) for a given metric value."""
+    if metric_name not in self.THRESHOLDS:
+      return 0
+    low_max, med_max = self.THRESHOLDS[metric_name]
+    if value < low_max:
+      return 0
+    elif value < med_max:
+      return 1
+    return 2
+
+  def evaluate_patient_risk(
+      self, metrics: Dict[str, float]
+  ) -> Tuple[int, str]:
+    """Validates metric completeness and evaluates cumulative risk score and category."""
+    missing_metrics = [m for m in self.THRESHOLDS if m not in metrics]
+    if missing_metrics:
+      raise ValueError(
+          "Incomplete patient profile. Missing required metrics:"
+          f" {missing_metrics}"
+      )
+
+    total_score = sum(
+        self.calculate_metric_score(m, v)
+        for m, v in metrics.items()
+        if m in self.THRESHOLDS
+    )
+
+    if total_score <= 2:
+      category = "Low Risk"
+    elif total_score <= 5:
+      category = "Moderate Risk"
+    else:
+      category = "High Risk"
+
+    return total_score, category
+
+
+# =====================================================================
+# 3. PRESENTATION LAYER (VIEWS)
+# =====================================================================
+class ConsoleView:
+  """Handles layout formatting, sanitized user prompts, and visual report outputs."""
+
+  @staticmethod
+  def display_main_menu() -> str:
+    print("\n" + "=" * 40 + "\n     DIABETES RISK SCORING SYSTEM\n" + "=" * 40)
+    print("1. Assess Patient Risk\n2. Exit\n" + "-" * 40)
+    return input("Select an option (1-2): ").strip()
+
+  @staticmethod
+  def display_patient_ids(ids: List[int]) -> None:
+    print(f"\nAvailable Patient IDs: {', '.join(map(str, ids))}")
+
+  @staticmethod
+  def prompt_patient_id() -> str:
+    return input("Enter Patient ID to assess: ").strip()
+
+  @staticmethod
+  def display_error(message: str) -> None:
+    print(f"\n[ERROR] {message}")
+
+  @staticmethod
+  def display_profile(patient_id: int, metrics: Dict[str, float]) -> None:
+    print(f"\n--- Clinical Profile for Patient {patient_id} ---")
+    for metric, val in metrics.items():
+      formatted_val = int(val) if metric == "Age" and val.is_integer() else val
+      print(f" * {metric}: {formatted_val}")
+
+  @staticmethod
+  def prompt_modification_choice() -> bool:
+    return (
+        input(
+            "\nDo you want to modify any metrics before calculation? (y/n): "
+        )
+        .strip()
+        .lower()
+        == "y"
+    )
+
+  @staticmethod
+  def prompt_metric_update(metric_name: str, current_value: float) -> float:
+    user_input = input(
+        f"Enter new {metric_name} [Current: {current_value}] (Or press Enter to"
+        " keep): "
+    ).strip()
+    if user_input == "":
+      return current_value
+    try:
+      val = float(user_input)
+      if math.isnan(val) or math.isinf(val) or val < 0:
+        print(
+            "[Invalid Input] Value must be a non-negative finite number."
+            " Keeping original value."
+        )
+        return current_value
+      return val
+    except ValueError:
+      print("[Invalid Input] Keeping original value.")
+      return current_value
+
+  @staticmethod
+  def display_diagnostic_report(
+      patient_id: int, score: int, category: str
+  ) -> None:
+    """Displays diagnostic report as an official medical receipt with decorative borders and confidentiality warnings."""
+    border_equal = "=" * 48
+    border_dash = "-" * 48
+    border_star = "*" * 48
+
+    print(f"\n{border_equal}")
+    print("          OFFICIAL MEDICAL DIAGNOSTIC RECEIPT         ")
+    print("             DIABETES RISK ASSESSMENT REPORT          ")
+    print(f"{border_equal}")
+    print(f" Transaction ID   : PAT-{patient_id:05d}")
+    print(f" Patient ID       : {patient_id}")
+    print(f"{border_dash}")
+    print(f" Cumulative Score : {score} pts")
+    print(f" Risk Category    : {category.upper()}")
+    print(f"{border_dash}")
+    print(f"{border_star}")
+    print("  [!] CONFIDENTIAL MEDICAL RECORD - FOR AUTHORIZED USE ONLY [!]")
+    print(f"{border_star}\n")
+
+    # Optional rich HTML rendering in Google Colab / Jupyter
+    try:
+      from IPython.display import HTML, display
+
+      color = (
+          "#2e7d32"
+          if "Low" in category
+          else "#f57c00" if "Moderate" in category else "#c62828"
+      )
+      html_content = f"""
+            <div style="border: 2px dashed #444; padding: 16px; border-radius: 4px; width: 380px; font-family: 'Courier New', monospace; background-color: #fffde7; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);">
+                <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 8px; margin-bottom: 12px;">
+                    <h4 style="margin: 0; color: #222; letter-spacing: 1px;">OFFICIAL MEDICAL DIAGNOSTIC RECEIPT</h4>
+                    <p style="margin: 3px 0 0 0; font-size: 11px; color: #555;">DIABETES RISK ASSESSMENT REPORT</p>
+                </div>
+                <p style="margin: 4px 0; font-size: 13px;"><b>Transaction ID:</b> PAT-{patient_id:05d}</p>
+                <p style="margin: 4px 0; font-size: 13px;"><b>Patient ID:</b> {patient_id}</p>
+                <hr style="border: none; border-top: 1px dashed #aaa; margin: 10px 0;" />
+                <p style="margin: 4px 0; font-size: 13px;"><b>Cumulative Score:</b> {score} pts</p>
+                <p style="margin: 4px 0; font-size: 13px;"><b>Risk Category:</b> <span style="color: {color}; font-weight: bold;">{category.upper()}</span></p>
+                <div style="margin-top: 14px; padding: 8px; background-color: #ffebee; border: 1px solid #ef5350; text-align: center; font-size: 10px; font-weight: bold; color: #c62828; letter-spacing: 0.5px;">
+                    CONFIDENTIAL MEDICAL RECORD - FOR AUTHORIZED USE ONLY
+                </div>
+            </div>
+            """
+      display(HTML(html_content))
+    except (ImportError, Exception):
+      pass
+
+
+# =====================================================================
+# 4. ORCHESTRATION LAYER (CONTROLLER)
+# =====================================================================
+class ConsoleController:
+  """Coordinates interaction workflows between Model, Service, and Console View."""
+
+  def __init__(
+      self,
+      model: PatientModel,
+      service: ClinicalRiskService,
+      view: ConsoleView,
+  ):
+    self.model = model
+    self.service = service
+    self.view = view
+
+  def run(self, max_iterations: Optional[int] = None) -> None:
+    """Runs the main interactive menu loop with optional safety limit for notebooks."""
+    iterations = 0
+    while True:
+      if max_iterations is not None and iterations >= max_iterations:
+        print(
+            "\n[Colab Guard] Maximum execution iterations reached. Exiting"
+            " runtime loop."
+        )
+        break
+
+      choice = self.view.display_main_menu()
+      iterations += 1
+
+      if choice == "1":
+        self.handle_assessment_workflow()
+      elif choice == "2":
+        print("\nExiting system. Goodbye.")
+        break
+      else:
+        self.view.display_error(
+            "Invalid menu selection. Please choose 1 or 2."
+        )
+
+  def handle_assessment_workflow(self) -> None:
+    """Executes the patient assessment and diagnostic scoring workflow."""
+    valid_ids = self.model.get_all_ids()
+    self.view.display_patient_ids(valid_ids)
+
+    id_input = self.view.prompt_patient_id()
+    try:
+      patient_id = int(id_input)
+      if patient_id <= 0:
+        raise ValueError
+    except ValueError:
+      self.view.display_error(
+          "Patient ID must be a valid positive integer value."
+      )
+      return
+
+    patient_metrics = self.model.get_patient(patient_id)
+    if not patient_metrics:
+      self.view.display_error(
+          f"Patient ID {patient_id} does not exist in the database."
+      )
+      return
+
+    self.view.display_profile(patient_id, patient_metrics)
+
+    if self.view.prompt_modification_choice():
+      updated_metrics = {}
+      for metric, current_val in patient_metrics.items():
+        updated_metrics[metric] = self.view.prompt_metric_update(
+            metric, current_val
+        )
+      self.model.update_patient(patient_id, updated_metrics)
+      patient_metrics = updated_metrics
+
+    try:
+      score, category = self.service.evaluate_patient_risk(patient_metrics)
+      self.view.display_diagnostic_report(patient_id, score, category)
+    except ValueError as e:
+      self.view.display_error(str(e))
+
+
+# =====================================================================
+# AUTOMATED 3-TIER TEST SUITE
+# =====================================================================
+class RiskAssessmentTestSuite:
+  """Encapsulates unit, end-to-end, and performance test suites without assert statement stripping risks."""
+
+  def __init__(
+      self,
+      model_factory: Callable[[], PatientModel],
+      service_class: Type[ClinicalRiskService],
+  ):
+    self.model_factory = model_factory
+    self.service_class = service_class
+
+  def run_all_tiers(self) -> None:
+    """Executes all three testing tiers sequentially."""
+    print("\n" + "=" * 60)
+    print("          STARTING 3-TIER AUTOMATED TESTING SUITE")
+    print("=" * 60)
+
+    self.run_tier1_unit_tests()
+    self.run_tier2_e2e_scenarios()
+    self.run_tier3_performance_benchmarks()
+
+    print("\n" + "=" * 60)
+    print("          ALL AUTOMATED TESTING TIERS PASSED SUCCESSFULLY")
+    print("=" * 60 + "\n")
+
+  def run_tier1_unit_tests(self) -> None:
+    """Tier 1: Unit Tests for rule calculations and categorical mapping."""
+    print("\n--- Running Tier 1: Unit Tests (Decision Rules) ---")
+    service = self.service_class()
+
+    # Test individual rule thresholds
+    if service.calculate_metric_score("Glucose", 95.0) != 0:
+      raise AssertionError("Failed Glucose Low threshold")
+    if service.calculate_metric_score("Glucose", 110.0) != 1:
+      raise AssertionError("Failed Glucose Med threshold")
+    if service.calculate_metric_score("Glucose", 130.0) != 2:
+      raise AssertionError("Failed Glucose High threshold")
+
+    # Test border cases (< comparison)
+    if service.calculate_metric_score("BMI", 24.9) != 0:
+      raise AssertionError("Border case BMI=24.9 failed")
+    if service.calculate_metric_score("BMI", 25.0) != 1:
+      raise AssertionError("Border case BMI=25.0 failed")
+
+    # Test complete risk category mapping boundaries
+    score_low, cat_low = service.evaluate_patient_risk({
+        "Glucose": 90.0,
+        "BMI": 22.0,
+        "Age": 30.0,
+        "BloodPressure": 110.0,
+    })
+    if not (score_low == 0 and "Low" in cat_low):
+      raise AssertionError(
+          f"Expected Low Risk, got {score_low} pts ({cat_low})"
+      )
+
+    score_med, cat_med = service.evaluate_patient_risk({
+        "Glucose": 115.0,
+        "BMI": 27.0,
+        "Age": 45.0,
+        "BloodPressure": 125.0,
+    })
+    if not (3 <= score_med <= 5 and "Moderate" in cat_med):
+      raise AssertionError(
+          f"Expected Mod Risk, got {score_med} pts ({cat_med})"
+      )
+
+    score_high, cat_high = service.evaluate_patient_risk({
+        "Glucose": 140.0,
+        "BMI": 35.0,
+        "Age": 60.0,
+        "BloodPressure": 135.0,
+    })
+    if not (score_high >= 6 and "High" in cat_high):
+      raise AssertionError(
+          f"Expected High Risk, got {score_high} pts ({cat_high})"
+      )
+
+    print(
+        " ✓ Tier 1 Unit Tests Pass: All rule sets mapped and categorized"
+        " perfectly."
+    )
+
+  def run_tier2_e2e_scenarios(self) -> None:
+    """Tier 2: E2E Scenario Tests covering cleaning, storage, modification, and scoring."""
+    print("\n--- Running Tier 2: End-to-End Workflows ---")
+    model = self.model_factory()
+    service = self.service_class()
+
+    # Test Case 1: Data cleaning checks (BMI imputation verification)
+    patient_102 = model.get_patient(102)
+    if patient_102 is None or patient_102["BMI"] <= 0:
+      raise AssertionError(
+          f"E2E Error: Anomalous BMI of 0 was not replaced. Got {patient_102}"
+      )
+
+    # Test Case 2: Workflow calculation with user modifications
+    patient_101 = model.get_patient(101)
+    if patient_101 is None:
+      raise AssertionError("E2E Error: Patient 101 not found")
+    original_score, _ = service.evaluate_patient_risk(patient_101)
+
+    modified_metrics = {
+        "Glucose": 150.0,
+        "BMI": patient_101["BMI"],
+        "Age": patient_101["Age"],
+        "BloodPressure": 140.0,
+    }
+
+    update_ok = model.update_patient(101, modified_metrics)
+    if not update_ok:
+      raise AssertionError("E2E Error: Database modification write failed")
+
+    updated_profile = model.get_patient(101)
+    if updated_profile is None:
+      raise AssertionError("E2E Error: Patient 101 profile missing after update")
+
+    new_score, new_category = service.evaluate_patient_risk(updated_profile)
+
+    if new_score <= original_score:
+      raise AssertionError(
+          "E2E Error: Score did not increase after modifying risk variables"
+      )
+    if "High" not in new_category and "Moderate" not in new_category:
+      raise AssertionError(
+          "E2E Error: Risk category didn't escalate correctly"
+      )
+
+    print(
+        " ✓ Tier 2 E2E Tests Pass: Clean-to-write-to-score cycle validated."
+    )
+
+  def run_tier3_performance_benchmarks(
+      self, iterations: int = 10000
+  ) -> None:
+    """Tier 3: Core Performance latency benchmarks with SLA assertion."""
+    print(
+        "\n--- Running Tier 3: Performance Latency"
+        f" ({iterations:,} iterations) ---"
+    )
+    service = self.service_class()
+    test_metrics = {
+        "Glucose": 115.0,
+        "BMI": 27.5,
+        "Age": 42.0,
+        "BloodPressure": 125.0,
+    }
+
+    start_time = time.perf_counter()
+    for _ in range(iterations):
+      _ = service.evaluate_patient_risk(test_metrics)
+    end_time = time.perf_counter()
+
+    total_duration = end_time - start_time
+    avg_duration_ms = (total_duration / iterations) * 1000
+
+    print(
+        f" ✓ Tier 3 Performance Pass: Completed {iterations:,} diagnostic"
+        f" evaluations in {total_duration:.4f}s."
+    )
+    print(
+        "   Mean Latency: "
+        f"{avg_duration_ms:.6f} ms per patient transaction analysis."
+    )
+
+    if avg_duration_ms > 1.0:
+      raise AssertionError(
+          f"Performance SLA breached: Average latency {avg_duration_ms:.6f} ms"
+          " exceeds SLA limit of 1.0 ms"
+      )
+
+
+# =====================================================================
+# SYSTEM APPLICATION ENTRY POINT
+# =====================================================================
+if __name__ == "__main__":
+  if RUN_TEST_SUITE:
+    suite = RiskAssessmentTestSuite(
+        model_factory=PatientModel, service_class=ClinicalRiskService
+    )
+    suite.run_all_tiers()
+  else:
+    # Run interactive application with optional storage persistence
+    db_model = PatientModel(storage_path="patients.json")
+    rules_service = ClinicalRiskService()
+    ui_view = ConsoleView()
+
+    app = ConsoleController(model=db_model, service=rules_service, view=ui_view)
+    app.run()
