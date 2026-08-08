@@ -1,6 +1,7 @@
 import sqlite3
 import statistics
 import time
+import random
 from typing import Dict, List, Optional, Tuple, Any
 import streamlit as st
 
@@ -84,6 +85,39 @@ class PatientModel:
                     "BloodPressure": row[3],
                 }
             return None
+
+    def get_all_patients(self) -> Dict[int, Dict[str, float]]:
+        """Retrieves all patient records from the SQLite database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT patient_id, glucose, bmi, age, blood_pressure FROM patients ORDER BY patient_id ASC")
+            rows = cursor.fetchall()
+            return {
+                row[0]: {
+                    "Glucose": row[1],
+                    "BMI": row[2],
+                    "Age": row[3],
+                    "BloodPressure": row[4],
+                }
+                for row in rows
+            }
+
+    def add_patient(self, patient_id: int, metrics: Dict[str, float]) -> bool:
+        """Inserts or replaces a patient record in SQLite."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO patients (patient_id, glucose, bmi, age, blood_pressure)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                patient_id,
+                metrics.get("Glucose", 95.0),
+                metrics.get("BMI", 24.0),
+                metrics.get("Age", 30.0),
+                metrics.get("BloodPressure", 120.0),
+            ))
+            conn.commit()
+            return True
 
     def update_patient(self, patient_id: int, updated_metrics: Dict[str, float]) -> bool:
         with self._get_connection() as conn:
@@ -234,7 +268,7 @@ class RiskAssessmentTestSuite:
 
 
 # =====================================================================
-# 3. STREAMLIT PRESENTATION & CONTROLLER LAYER (UNCHANGED)
+# 3. STREAMLIT PRESENTATION & CONTROLLER LAYER WITH LIVE DB SIMULATION
 # =====================================================================
 def main():
     st.set_page_config(
@@ -254,9 +288,9 @@ def main():
 
     # Header section
     st.title("🩺 Diabetes Risk Scoring System")
-    st.caption("Select a patient, review/adjust clinical metrics, and evaluate diagnostic risk.")
+    st.caption("SQLite persistent database backend with real-time telemetry simulation.")
 
-    # Sidebar: Testing Suite Controls
+    # Sidebar: System Tools & Test Suite Controls
     with st.sidebar:
         st.header("⚙️ System Tools")
         if st.button("🧪 Run Test Suite", type="secondary", use_container_width=True):
@@ -267,79 +301,173 @@ def main():
             except AssertionError as err:
                 st.sidebar.error(f"Test Assertion Failed:\n{err}")
 
-    # Section 1: Patient Selection
-    patient_ids = model.get_all_ids()
-    selected_id = st.selectbox("Select Patient ID:", options=patient_ids)
+        st.divider()
+        st.write("📁 **Database Target:** `patients.db` (SQLite)")
 
-    # Section 2: Clinical Metrics Input Form
-    patient_metrics = model.get_patient(selected_id)
+    # UI Tab Navigation
+    tab_assessment, tab_live_db = st.tabs([
+        "📋 Patient Assessment", 
+        "⚡ Live Database & Simulation"
+    ])
 
-    if patient_metrics:
-        st.subheader(f"📋 Clinical Metrics for Patient {selected_id}")
+    # -----------------------------------------------------------------
+    # TAB 1: INDIVIDUAL PATIENT ASSESSMENT
+    # -----------------------------------------------------------------
+    with tab_assessment:
+        patient_ids = model.get_all_ids()
+        selected_id = st.selectbox("Select Patient ID:", options=patient_ids, key="assessment_pid_select")
 
-        with st.form(key=f"patient_form_{selected_id}"):
-            col1, col2 = st.columns(2)
+        patient_metrics = model.get_patient(selected_id)
 
-            with col1:
-                glucose = st.number_input(
-                    "Glucose (mg/dL)", 
-                    min_value=0.0, 
-                    value=float(patient_metrics["Glucose"]), 
-                    step=1.0
-                )
-                bmi = st.number_input(
-                    "BMI", 
-                    min_value=0.0, 
-                    value=float(patient_metrics["BMI"]), 
-                    step=0.1
-                )
+        if patient_metrics:
+            st.subheader(f"Clinical Profile: Patient {selected_id}")
 
-            with col2:
-                age = st.number_input(
-                    "Age (years)", 
-                    min_value=0.0, 
-                    value=float(patient_metrics["Age"]), 
-                    step=1.0
-                )
-                bp = st.number_input(
-                    "Blood Pressure (mmHg)", 
-                    min_value=0.0, 
-                    value=float(patient_metrics["BloodPressure"]), 
-                    step=1.0
-                )
+            with st.form(key=f"patient_form_{selected_id}"):
+                col1, col2 = st.columns(2)
 
-            submitted = st.form_submit_button("Evaluate Patient Risk", type="primary", use_container_width=True)
+                with col1:
+                    glucose = st.number_input(
+                        "Glucose (mg/dL)", 
+                        min_value=0.0, 
+                        value=float(patient_metrics["Glucose"]), 
+                        step=1.0
+                    )
+                    bmi = st.number_input(
+                        "BMI", 
+                        min_value=0.0, 
+                        value=float(patient_metrics["BMI"]), 
+                        step=0.1
+                    )
 
-        # Section 3: Diagnostic Risk Report
-        if submitted:
-            updated_metrics = {
-                "Glucose": glucose,
-                "BMI": bmi,
-                "Age": age,
-                "BloodPressure": bp
-            }
+                with col2:
+                    age = st.number_input(
+                        "Age (years)", 
+                        min_value=0.0, 
+                        value=float(patient_metrics["Age"]), 
+                        step=1.0
+                    )
+                    bp = st.number_input(
+                        "Blood Pressure (mmHg)", 
+                        min_value=0.0, 
+                        value=float(patient_metrics["BloodPressure"]), 
+                        step=1.0
+                    )
 
-            # Update SQLite database persistence
-            model.update_patient(selected_id, updated_metrics)
+                submitted = st.form_submit_button("Evaluate Patient Risk", type="primary", use_container_width=True)
 
-            # Evaluate Risk using Service layer
-            score, category = service.evaluate_patient_risk(updated_metrics)
+            if submitted:
+                updated_metrics = {
+                    "Glucose": glucose,
+                    "BMI": bmi,
+                    "Age": age,
+                    "BloodPressure": bp
+                }
 
-            st.divider()
-            st.subheader("📊 Diagnostic Risk Report")
+                # Persist update to SQLite
+                model.update_patient(selected_id, updated_metrics)
 
-            res_col1, res_col2 = st.columns(2)
-            with res_col1:
-                st.metric(label="Cumulative Risk Score", value=f"{score} pts")
+                # Calculate Risk
+                score, category = service.evaluate_patient_risk(updated_metrics)
 
-            with res_col2:
-                st.write("**Risk Category**")
-                if category == "Low Risk":
-                    st.success(f"🟢 **{category.upper()}**")
-                elif category == "Moderate Risk":
-                    st.warning(f"🟠 **{category.upper()}**")
-                else:
-                    st.error(f"🔴 **{category.upper()}**")
+                st.divider()
+                st.subheader("📊 Diagnostic Risk Report")
+
+                res_col1, res_col2 = st.columns(2)
+                with res_col1:
+                    st.metric(label="Cumulative Risk Score", value=f"{score} pts")
+
+                with res_col2:
+                    st.write("**Risk Category**")
+                    if category == "Low Risk":
+                        st.success(f"🟢 **{category.upper()}**")
+                    elif category == "Moderate Risk":
+                        st.warning(f"🟠 **{category.upper()}**")
+                    else:
+                        st.error(f"🔴 **{category.upper()}**")
+
+    # -----------------------------------------------------------------
+    # TAB 2: LIVE DATABASE MONITOR & TELEMETRY SIMULATOR
+    # -----------------------------------------------------------------
+    with tab_live_db:
+        st.subheader("⚡ Real-Time SQLite Database Monitor")
+        st.write("This panel displays records stored in `patients.db` alongside live updates.")
+
+        # Simulation Action Buttons
+        sim_col1, sim_col2, sim_col3 = st.columns(3)
+
+        with sim_col1:
+            if st.button("🎲 Random Vitals Update", use_container_width=True):
+                all_ids = model.get_all_ids()
+                if all_ids:
+                    target_id = random.choice(all_ids)
+                    current = model.get_patient(target_id)
+                    if current:
+                        # Fluctuate metrics realistically
+                        current["Glucose"] = round(max(70.0, current["Glucose"] + random.uniform(-15.0, 20.0)), 1)
+                        current["BloodPressure"] = round(max(90.0, current["BloodPressure"] + random.uniform(-10.0, 15.0)), 1)
+                        current["BMI"] = round(max(18.0, current["BMI"] + random.uniform(-0.5, 0.5)), 1)
+                        model.update_patient(target_id, current)
+                        st.toast(f"⚡ Live update written to SQLite for Patient {target_id}!", icon="💾")
+
+        with sim_col2:
+            if st.button("➕ Admit New Patient", use_container_width=True):
+                existing_ids = model.get_all_ids()
+                new_id = max(existing_ids) + 1 if existing_ids else 101
+                new_vitals = {
+                    "Glucose": round(random.uniform(85.0, 175.0), 1),
+                    "BMI": round(random.uniform(20.0, 38.0), 1),
+                    "Age": float(random.randint(22, 75)),
+                    "BloodPressure": round(random.uniform(110.0, 145.0), 1)
+                }
+                model.add_patient(new_id, new_vitals)
+                st.toast(f"➕ Patient {new_id} admitted and saved to DB!", icon="🏥")
+
+        with sim_col3:
+            stream_requested = st.button("📡 Stream Live Telemetry (5s)", use_container_width=True, type="primary")
+
+        # Container for rendering database records
+        db_display_container = st.empty()
+
+        def render_live_table():
+            all_records = model.get_all_patients()
+            table_data = []
+
+            for pid, metrics in all_records.items():
+                score, category = service.evaluate_patient_risk(metrics)
+                table_data.append({
+                    "Patient ID": pid,
+                    "Glucose (mg/dL)": metrics["Glucose"],
+                    "BMI": metrics["BMI"],
+                    "Age": int(metrics["Age"]),
+                    "Blood Pressure": metrics["BloodPressure"],
+                    "Score": f"{score} pts",
+                    "Risk Category": category
+                })
+
+            with db_display_container.container():
+                st.dataframe(table_data, use_container_width=True, hide_index=True)
+
+        # Handle telemetry streaming loop
+        if stream_requested:
+            progress_bar = st.progress(0, text="Streaming live clinical updates to SQLite...")
+            for i in range(1, 6):
+                time.sleep(0.8)
+                all_ids = model.get_all_ids()
+                if all_ids:
+                    target_id = random.choice(all_ids)
+                    p_data = model.get_patient(target_id)
+                    if p_data:
+                        p_data["Glucose"] = round(max(70.0, p_data["Glucose"] + random.uniform(-10.0, 15.0)), 1)
+                        p_data["BloodPressure"] = round(max(90.0, p_data["BloodPressure"] + random.uniform(-5.0, 10.0)), 1)
+                        model.update_patient(target_id, p_data)
+
+                render_live_table()
+                progress_bar.progress(i * 20, text=f"Streaming tick {i}/5 completed...")
+
+            progress_bar.empty()
+            st.success("Live telemetry stream finished!")
+        else:
+            render_live_table()
 
 
 if __name__ == "__main__":
